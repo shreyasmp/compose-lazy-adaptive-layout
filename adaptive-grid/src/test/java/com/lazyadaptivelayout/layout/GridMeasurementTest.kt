@@ -129,6 +129,24 @@ class GridMeasurementTest {
     }
 
     @Test
+    fun invalidatePositionCacheIfHeightsChanged_clearsCachedPositions() {
+        val items = listOf(
+            item(1, GridItemType.Staggered, groupColumns = 2, heightPx = 100),
+            item(2, GridItemType.Staggered, groupColumns = 2, heightPx = 100),
+        )
+        val initialHeights = listOf(100, 100)
+        measureFlattenedGrid(items, initialHeights, constraints, density)
+
+        val updatedHeights = listOf(200, 100)
+        invalidatePositionCacheIfHeightsChanged(listOf(0 to 100))
+        val positions = measureFlattenedGrid(items, updatedHeights, constraints, density)
+
+        assertEquals(200, positions[0].height)
+        assertEquals(100, positions[1].height)
+        assertTrue(positions[1].y >= positions[0].height || positions[1].columnIndex != positions[0].columnIndex)
+    }
+
+    @Test
     fun paddingOnly_itemsAreSkipped() {
         // Edge top+bottom=8, content vertical=4 -> expected padding height = 8 + (4/2 + 1) = 11
         val edge = EdgeSpacing(top = 4f.toDp(), bottom = 4f.toDp())

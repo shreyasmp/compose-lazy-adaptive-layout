@@ -45,6 +45,13 @@ internal fun clearMeasurementCaches() {
     cachedDataVersion = Int.MIN_VALUE
 }
 
+/** Drops cached positions when item heights changed so layout is recomputed from scratch. */
+internal fun invalidatePositionCacheIfHeightsChanged(heightChanges: List<Pair<Int, Int>>) {
+    if (heightChanges.isNotEmpty()) {
+        cachedPositions = null
+    }
+}
+
 /**
  * Measures and positions items in a pre-flattened grid layout.
  * Caches intermediate results to reduce churn between passes.
@@ -248,11 +255,12 @@ private fun <T> shouldStartNewRow(
  * Get the column count needed for an item type
  */
 private fun <T> getColumnCount(item: EnrichedGridItem<T>, maxPossibleColumns: Int): Int {
+    val safeMaxColumns = maxPossibleColumns.coerceAtLeast(1)
     return when (item.config.type) {
-        is GridItemType.Custom -> maxPossibleColumns
+        is GridItemType.Custom -> safeMaxColumns
         is GridItemType.FullWidth -> 1
-        is GridItemType.Staggered -> item.groupColumns
-        is GridItemType.Uniform -> item.groupColumns
+        is GridItemType.Staggered -> item.groupColumns.coerceAtLeast(1)
+        is GridItemType.Uniform -> item.groupColumns.coerceAtLeast(1)
     }
 }
 
