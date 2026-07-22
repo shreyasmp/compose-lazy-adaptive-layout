@@ -50,7 +50,7 @@ android {
 
 // Vanniktech Maven Publish Plugin Configuration
 mavenPublishing {
-    coordinates("com.wayfair", "lazy-adaptive-grid", "1.0.0")
+    coordinates("com.wayfair", "lazy-adaptive-grid", "1.1.0")
  
     // Publish to Maven Central (Central Portal)
     publishToMavenCentral(automaticRelease = true, validateDeployment = false)

@@ -10,13 +10,17 @@ import com.lazyadaptivelayout.model.ItemPosition
 import kotlin.math.min
 import kotlin.math.max
 
-/** Returns an approximate "padding-only" height for an item. */
+/**
+ * Returns the maximum height an item would have if it rendered zero-height content.
+ * Must match the padding actually applied by [AdaptiveGridScopeImpl.wrapContentWithSpacing]:
+ *   topPadding  = edgeSpacing.top  (when index < columns, worst-case)
+ *   bottomPadding = contentPadding.vertical / 2
+ */
 private fun calculateExpectedPaddingHeight(config: GridItemConfig, density: Density): Int {
     val topPadding = with(density) { config.edgeSpacing.top.toPx().toInt() }
-    val bottomPadding = with(density) { config.edgeSpacing.bottom.toPx().toInt() }
-    val contentTopPadding = with(density) { config.contentPadding.vertical.toPx().toInt() }
+    val bottomPadding = with(density) { (config.contentPadding.vertical / 2).toPx().toInt() }
 
-    return topPadding + bottomPadding + (contentTopPadding / 2 + 1)
+    return topPadding + bottomPadding
 }
 
 private var cachedPositions: List<ItemPosition>? = null

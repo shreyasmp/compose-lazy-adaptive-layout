@@ -396,6 +396,7 @@ fun <T> LazyAdaptiveGrid(
             val visibleItemsInfo = mutableListOf<AdaptiveGridItemInfo>()
 
             currentPositions.forEachIndexed { index, position ->
+                if (position.x == 0 && position.y == 0 && position.width == 0 && position.height == 0) return@forEachIndexed
                 val normalizedSize = normalizedItemSize(index, position, measuredHeights)
                 val itemTop = position.y
                 val itemBottom = position.y + normalizedSize

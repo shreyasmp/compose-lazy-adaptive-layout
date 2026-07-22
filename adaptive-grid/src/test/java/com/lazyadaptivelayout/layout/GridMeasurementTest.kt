@@ -148,7 +148,7 @@ class GridMeasurementTest {
 
     @Test
     fun paddingOnly_itemsAreSkipped() {
-        // Edge top+bottom=8, content vertical=4 -> expected padding height = 8 + (4/2 + 1) = 11
+        // Edge top=4, content vertical=4 -> expected padding height = 4 + (4/2) = 6
         val edge = EdgeSpacing(top = 4f.toDp(), bottom = 4f.toDp())
         val padding = ContentPadding(vertical = 4f.toDp())
         val items = listOf(
@@ -156,7 +156,7 @@ class GridMeasurementTest {
             item(2, GridItemType.Uniform, groupColumns = 2)
         )
         // First measured height <= expected padding height => should be treated as padding-only and skipped
-        val heights = listOf(10, 20)
+        val heights = listOf(6, 20)
 
         val positions = measureFlattenedGrid(items, heights, constraints, density)
 
