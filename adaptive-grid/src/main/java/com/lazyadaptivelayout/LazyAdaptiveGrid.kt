@@ -332,16 +332,53 @@ fun <T> LazyAdaptiveGrid(
                 lastMeasuredIndex = lastMeasuredIndex,
             )
 
-            val (placeables, itemHeights, heightChanges) = measureGridItems(
+            val measurer: (Int, Constraints) -> List<Placeable> =
+                { index, constraints -> compose(index).map { it.measure(constraints) } }
+            val firstPass = measureGridItems(
                 layoutProvider = layoutProvider,
                 enrichedItems = enrichedItems,
                 visibleRange = visibleRange,
                 measuredHeights = measuredHeights,
                 constraints = constraints,
-                measurer = { index, constraints -> compose(index).map { it.measure(constraints) } },
+                measurer = measurer,
                 bufferSize = bufferSize,
                 getCachedWidth = getCachedWidth
             )
+            var placeables = firstPass.first
+            var itemHeights = firstPass.second
+            var heightChanges = firstPass.third
+
+            // Step the measure window over zero-height runs (anchors, empty blocks) so content
+            // below them is still reached; see nextZeroRunProbeRange.
+            var measuredEnd = minOf(itemsCount - 1, visibleRange.last + bufferSize)
+            var extraItemsProbed = 0
+            while (true) {
+                val probeRange = nextZeroRunProbeRange(
+                    itemHeights = itemHeights,
+                    measuredEnd = measuredEnd,
+                    bufferSize = bufferSize,
+                    extraItemsProbed = extraItemsProbed,
+                ) ?: break
+                val probe = measureGridItems(
+                    layoutProvider = layoutProvider,
+                    enrichedItems = enrichedItems,
+                    visibleRange = probeRange,
+                    measuredHeights = measuredHeights,
+                    constraints = constraints,
+                    measurer = measurer,
+                    bufferSize = 0,
+                    getCachedWidth = getCachedWidth
+                )
+                val mergedPlaceables = placeables.toMutableList()
+                for (index in probeRange) {
+                    probe.first.getOrNull(index)?.let { mergedPlaceables[index] = it }
+                }
+                placeables = mergedPlaceables
+                itemHeights = probe.second
+                heightChanges = heightChanges + probe.third
+                extraItemsProbed += probeRange.last - probeRange.first + 1
+                measuredEnd = probeRange.last
+            }
 
             invalidatePositionCacheIfHeightsChanged(heightChanges)
             val currentPositions = measureFlattenedGrid(enrichedItems, itemHeights, constraints, density)
@@ -466,16 +503,22 @@ fun <T> LazyAdaptiveGrid(
                     0f
                 }
 
+            // Items beyond the measured window are unknown, not empty: with progressive measurement
+            // the viewport can reach the end of the measured content while more items remain.
+            // Reporting false there makes AdaptiveGridState.onScroll drop forward drags, so no pass
+            // ever measures the rest. Only the geometric answer is trusted once the window has
+            // reached the end of the list (trailing zero-height anchors then do not count).
+            val hasUnmeasuredItemsBeyondWindow = measuredEnd < itemsCount - 1
             val canScrollForward = if (itemsCount > 0) {
                 val lastMeasuredIndex = currentPositions.indexOfLast { it.height > 0 }
                 if (lastMeasuredIndex < 0) {
-                    false
+                    hasUnmeasuredItemsBeyondWindow
                 } else {
                     val lastItem = currentPositions[lastMeasuredIndex]
                     val lastItemBottom =
                         lastItem.y +
                             normalizedItemSize(lastMeasuredIndex, lastItem, measuredHeights)
-                    lastItemBottom > viewportEnd
+                    lastItemBottom > viewportEnd || hasUnmeasuredItemsBeyondWindow
                 }
             } else {
                 false
@@ -623,8 +666,8 @@ private fun <T> buildAdaptiveGridItemInfo(
  * Measurement expands progressively: at most one item beyond [lastMeasuredIndex] is composed
  * per pass (plus [bufferSize]). This keeps the grid compact while async blocks (e.g. experience
  * services) load, instead of eagerly measuring far ahead and reserving white space for
- * placeholders. Within already-measured content, a viewport-based forward buffer is still used
- * for scroll smoothness.
+ * placeholders. The window always reaches [lastMeasuredIndex] + 1 + [bufferSize], so long feeds
+ * are measured to the end one step per pass.
  */
 internal fun calculateVisibleRangeFromRelativePosition(
     firstVisibleItemIndex: Int,
@@ -649,20 +692,62 @@ internal fun calculateVisibleRangeFromRelativePosition(
         if (lastMeasuredIndex < 0) {
             // Nothing measured yet — probe a small initial window only.
             minOf(itemCount - 1, maxOf(bufferSize, minOf(10, scrollBasedEnd)))
-        } else if (scrollBasedEnd <= lastMeasuredIndex) {
-            // Viewport forward buffer is fully within measured content.
-            minOf(itemCount - 1, scrollBasedEnd)
         } else {
-            // Extend at most one item past the last measured item until it reports height.
+            // Extend at most one item past the last measured item (plus bufferSize) per pass until
+            // it reports height. firstVisibleItemIndex is only the scroll anchor (it stays 0 while the
+            // scroll offset grows), so a window derived from it ([scrollBasedEnd]) must never cap the
+            // window below the measured content: it stopped measurement at ~forwardBuffer items and
+            // left every item after that (the end blocks of long feeds) unmeasured.
             minOf(
                 itemCount - 1,
-                maxOf(
-                    lastMeasuredIndex,
-                    minOf(scrollBasedEnd, lastMeasuredIndex + 1 + bufferSize),
-                ),
+                maxOf(lastMeasuredIndex, lastMeasuredIndex + 1 + bufferSize),
             )
         }
 
+    return start..end
+}
+
+/** Upper bound on extra items probed past a zero-height run within a single measure pass. */
+internal const val ZERO_HEIGHT_RUN_MAX_LOOKAHEAD = 60
+
+/**
+ * Progressive measurement ([calculateVisibleRangeFromRelativePosition]) only reaches a few items
+ * past the last item that reported a height. When every item in that window is zero-height (e.g.
+ * pagination / secondary-fetch anchors, or blocks that render nothing) no height changes, so no
+ * remeasure is requested and the window never moves: the real content below the run is never
+ * composed and the grid cannot scroll to it.
+ *
+ * Returns the next range of indices to probe in the same measure pass, or null when the measured
+ * window does not end in a zero-height run (or the list end / [ZERO_HEIGHT_RUN_MAX_LOOKAHEAD] was
+ * reached). Zero-height items are transparent: probing continues past them, one
+ * `bufferSize + 1` step at a time, until something reports a height.
+ *
+ * @param itemHeights measured height per item index so far (0 = collapsed or not measured).
+ * @param measuredEnd last index composed and measured so far in this pass.
+ * @param extraItemsProbed items already probed by earlier calls for this pass.
+ */
+internal fun nextZeroRunProbeRange(
+    itemHeights: List<Int>,
+    measuredEnd: Int,
+    bufferSize: Int,
+    extraItemsProbed: Int,
+): IntRange? {
+    val lastIndex = itemHeights.size - 1
+    if (measuredEnd < 0 || measuredEnd >= lastIndex) return null
+    if (extraItemsProbed >= ZERO_HEIGHT_RUN_MAX_LOOKAHEAD) return null
+
+    val step = bufferSize + 1
+    val tailStart = maxOf(0, measuredEnd - bufferSize)
+    for (index in tailStart..measuredEnd) {
+        if (itemHeights[index] > 0) return null
+    }
+
+    val start = measuredEnd + 1
+    val end = minOf(
+        lastIndex,
+        measuredEnd + step,
+        start + (ZERO_HEIGHT_RUN_MAX_LOOKAHEAD - extraItemsProbed) - 1,
+    )
     return start..end
 }
 

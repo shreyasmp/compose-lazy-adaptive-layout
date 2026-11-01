@@ -101,9 +101,37 @@ class LazyAdaptiveGridPrivateHelpersTest {
             lastMeasuredIndex = 150,
         )
 
-        // scrollBasedEnd=70 is within measured content (lastMeasured=150), so end=70.
+        // The window is never capped below measured content by the (unreliable) scroll anchor:
+        // it reaches one item past lastMeasured plus bufferSize (150+1+2).
         assertEquals(8, range.first)
-        assertEquals(70, range.last)
+        assertEquals(153, range.last)
+    }
+
+    @Test
+    fun calculateVisibleRange_longFeed_isNotCappedByScrollAnchorForwardBuffer() {
+        // firstVisibleItemIndex stays 0 while the scroll offset grows. viewportHeight=2268 gives a
+        // forward buffer of 66 items; with 68 items measured the window used to stop at 66, so the
+        // last items of a 75-item feed (end blocks, footer) were never measured.
+        val range = calculateVisibleRange(
+            firstVisibleItemIndex = 0,
+            firstVisibleItemScrollOffset = 5000,
+            itemCount = 75,
+            bufferSize = 2,
+            viewportHeight = 2268,
+            lastMeasuredIndex = 68,
+        )
+
+        assertEquals(0, range.first)
+        assertEquals(71, range.last)
+
+        var measuredEnd = minOf(74, range.last + 2)
+        var lastMeasured = measuredEnd
+        repeat(5) {
+            val next = calculateVisibleRange(0, 5000, 75, 2, 2268, lastMeasured)
+            measuredEnd = minOf(74, next.last + 2)
+            lastMeasured = measuredEnd
+        }
+        assertEquals("every item must eventually be measured", 74, measuredEnd)
     }
 
     @Test
