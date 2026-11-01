@@ -31,7 +31,7 @@ import com.lazyadaptivelayout.layout.clearMeasurementCaches
 import com.lazyadaptivelayout.layout.invalidatePositionCacheIfHeightsChanged
 import com.lazyadaptivelayout.layout.measureFlattenedGrid
 import com.lazyadaptivelayout.layout.notifyDataVersion
-import com.lazyadaptivelayout.layout.trailingCollapsedIndices
+import com.lazyadaptivelayout.layout.collapsedZeroHeightVisibleIndices
 import com.lazyadaptivelayout.model.AdaptiveGridItemInfo
 import com.lazyadaptivelayout.model.GridItem
 import com.lazyadaptivelayout.model.GridItemConfig
@@ -468,28 +468,27 @@ fun <T> LazyAdaptiveGrid(
 
             val canScrollForward = if (itemsCount > 0) {
                 val lastMeasuredIndex = currentPositions.indexOfLast { it.height > 0 }
-                val hasMoreItems = lastMeasuredIndex >= 0 && lastMeasuredIndex < itemsCount - 1
-                if (hasMoreItems) {
-                    true
-                } else if (lastMeasuredIndex >= 0) {
-                    val lastItem = currentPositions[lastMeasuredIndex]
-                    lastItem.y + lastItem.height > viewportEnd
+                if (lastMeasuredIndex < 0) {
+                    false
                 } else {
-                    itemsCount > 0
+                    val lastItem = currentPositions[lastMeasuredIndex]
+                    val lastItemBottom =
+                        lastItem.y +
+                            normalizedItemSize(lastMeasuredIndex, lastItem, measuredHeights)
+                    lastItemBottom > viewportEnd
                 }
             } else {
                 false
             }
 
-            // Trailing items that render nothing (e.g. pagination/secondary-fetch anchors) collapse
-            // to zero height and never intersect the viewport, so they are excluded from the
-            // geometric visible set. That makes lastVisibleItemIndex undershoot the true last index
-            // and can stall index-based pagination. Once the measure window has reached the end,
-            // report these trailing collapsed items as visible so bottom-reached detection is
-            // reliable. Placement still uses the geometric set (these items have nothing to place).
+            // Zero-height anchors (secondary fetch, pagination) never intersect the viewport but must
+            // be reported in visibleItemsInfo so Rex can trigger fetches. In-window anchors are
+            // included within the progressive measure window; trailing anchors when the window
+            // reaches the list end.
             val finalVisibleItemsInfo =
-                trailingCollapsedIndices(
-                    lastVisibleIndex = mergedVisibleItemsInfo.lastOrNull()?.index ?: -1,
+                collapsedZeroHeightVisibleIndices(
+                    lastGeometricVisibleIndex = mergedVisibleItemsInfo.lastOrNull()?.index ?: -1,
+                    measureWindowEnd = visibleRange.last,
                     itemsCount = itemsCount,
                     measureWindowReachedEnd = visibleRange.last >= itemsCount - 1,
                     effectiveHeightAt = { index ->
@@ -497,12 +496,12 @@ fun <T> LazyAdaptiveGrid(
                         if (position == null) Int.MAX_VALUE
                         else normalizedItemSize(index, position, measuredHeights)
                     },
-                ).let { trailingIndices ->
-                    if (trailingIndices.isEmpty()) {
+                ).let { collapsedIndices ->
+                    if (collapsedIndices.isEmpty()) {
                         mergedVisibleItemsInfo
                     } else {
                         val augmented = mergedVisibleItemsInfo.toMutableList()
-                        for (index in trailingIndices) {
+                        for (index in collapsedIndices) {
                             val position = currentPositions.getOrNull(index) ?: continue
                             augmented.add(
                                 buildAdaptiveGridItemInfo(
@@ -618,8 +617,16 @@ private fun <T> buildAdaptiveGridItemInfo(
     )
 }
 
-/** Returns a conservative index range to measure around the current scroll position. */
-private fun calculateVisibleRangeFromRelativePosition(
+/**
+ * Returns a conservative index range to measure around the current scroll position.
+ *
+ * Measurement expands progressively: at most one item beyond [lastMeasuredIndex] is composed
+ * per pass (plus [bufferSize]). This keeps the grid compact while async blocks (e.g. experience
+ * services) load, instead of eagerly measuring far ahead and reserving white space for
+ * placeholders. Within already-measured content, a viewport-based forward buffer is still used
+ * for scroll smoothness.
+ */
+internal fun calculateVisibleRangeFromRelativePosition(
     firstVisibleItemIndex: Int,
     firstVisibleItemScrollOffset: Int,
     itemCount: Int,
@@ -628,23 +635,34 @@ private fun calculateVisibleRangeFromRelativePosition(
     lastMeasuredIndex: Int = -1,
 ): IntRange {
     if (itemCount == 0) return IntRange.EMPTY
-    
+
     val start = maxOf(0, firstVisibleItemIndex - bufferSize)
-    
+
     val estimatedItemsForViewport = (viewportHeight / 100).coerceAtLeast(20)
     val forwardBuffer = maxOf(
         bufferSize * 10,
-        estimatedItemsForViewport * 3
+        estimatedItemsForViewport * 3,
     )
-    
-    val endFromFirst = firstVisibleItemIndex + forwardBuffer
-    val endFromLast = if (lastMeasuredIndex >= 0) {
-        lastMeasuredIndex + forwardBuffer
-    } else {
-        endFromFirst
-    }
-    val end = minOf(itemCount - 1, maxOf(endFromFirst, endFromLast))
-    
+    val scrollBasedEnd = firstVisibleItemIndex + forwardBuffer
+
+    val end =
+        if (lastMeasuredIndex < 0) {
+            // Nothing measured yet — probe a small initial window only.
+            minOf(itemCount - 1, maxOf(bufferSize, minOf(10, scrollBasedEnd)))
+        } else if (scrollBasedEnd <= lastMeasuredIndex) {
+            // Viewport forward buffer is fully within measured content.
+            minOf(itemCount - 1, scrollBasedEnd)
+        } else {
+            // Extend at most one item past the last measured item until it reports height.
+            minOf(
+                itemCount - 1,
+                maxOf(
+                    lastMeasuredIndex,
+                    minOf(scrollBasedEnd, lastMeasuredIndex + 1 + bufferSize),
+                ),
+            )
+        }
+
     return start..end
 }
 

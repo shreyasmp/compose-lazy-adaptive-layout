@@ -475,13 +475,9 @@ private fun <T> positionCustomItem(
     maxPossibleColumns: Int
 ) {
     val arrayHeight = allItemHeights[index]
-    val configHeight = item.config.height
-    
-    val finalItemHeight = if (arrayHeight <= 0 && configHeight != null) {
-        configHeight
-    } else {
-        arrayHeight
-    }
+    // Only use measured height for positioning. Do not reserve space from config.height before
+    // the item is composed — async blocks should collapse until their content is ready.
+    val finalItemHeight = arrayHeight
     
     val customType = item.config.type as GridItemType.Custom
     val spans = min(customType.spans, maxPossibleColumns)

@@ -84,11 +84,9 @@ class LazyAdaptiveGridPrivateHelpersTest {
             lastMeasuredIndex = -1,
         )
 
-        // viewportHeight=1000 => estimatedItemsForViewport=(1000/100)=10 => clamped to 20
-        // forwardBuffer=maxOf(buffer*10=20, estimated*3=60)=60
-        // start=maxOf(0, 10-2)=8, end=minOf(199, 10+60)=70
+        // Nothing measured yet: only a small initial probe window (max 10 items).
         assertEquals(8, range.first)
-        assertEquals(70, range.last)
+        assertEquals(10, range.last)
         assertTrue(!range.isEmpty())
     }
 
@@ -103,9 +101,25 @@ class LazyAdaptiveGridPrivateHelpersTest {
             lastMeasuredIndex = 150,
         )
 
-        // With lastMeasuredIndex=150 and forwardBuffer=60 => endFromLast=210, clamped to 199.
+        // scrollBasedEnd=70 is within measured content (lastMeasured=150), so end=70.
         assertEquals(8, range.first)
-        assertEquals(199, range.last)
+        assertEquals(70, range.last)
+    }
+
+    @Test
+    fun calculateVisibleRange_progressiveCap_limitsMeasurementBeyondLastMeasured() {
+        val range = calculateVisibleRange(
+            firstVisibleItemIndex = 0,
+            firstVisibleItemScrollOffset = 0,
+            itemCount = 200,
+            bufferSize = 2,
+            viewportHeight = 1000,
+            lastMeasuredIndex = 2,
+        )
+
+        // Only one item beyond lastMeasured (2+1+2=5), not the full forward buffer of 60.
+        assertEquals(0, range.first)
+        assertEquals(5, range.last)
     }
 
     @Test
