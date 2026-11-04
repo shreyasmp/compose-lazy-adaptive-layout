@@ -147,6 +147,26 @@ class GridMeasurementTest {
     }
 
     @Test
+    fun collapsedBlock_leavesNoGapAndReopensInPlaceWhenLoaded() {
+        val items = listOf(
+            item(1, GridItemType.FullWidth, groupColumns = 1),
+            item(2, GridItemType.FullWidth, groupColumns = 1),
+            item(3, GridItemType.FullWidth, groupColumns = 1)
+        )
+
+        // The middle block is loading (renders nothing): the block below moves up against the first.
+        val collapsed = measureFlattenedGrid(items, listOf(100, 0, 100), constraints, density)
+        assertEquals(100, collapsed[2].y)
+
+        // Its content arrives: it is shown in place and the block below moves down by its height.
+        invalidatePositionCacheIfHeightsChanged(listOf(1 to 60))
+        val loaded = measureFlattenedGrid(items, listOf(100, 60, 100), constraints, density)
+        assertEquals(100, loaded[1].y)
+        assertEquals(60, loaded[1].height)
+        assertEquals(160, loaded[2].y)
+    }
+
+    @Test
     fun paddingOnly_itemsAreSkipped() {
         // Edge top=4, content vertical=4 -> expected padding height = 4 + (4/2) = 6
         val edge = EdgeSpacing(top = 4f.toDp(), bottom = 4f.toDp())

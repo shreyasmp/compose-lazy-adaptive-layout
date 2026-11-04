@@ -805,29 +805,27 @@ internal fun <T> measureGridItems(
         val itemHeight = if (cachedHeight != null && cachedHeight > 0 && !isVisible) {
             cachedHeight
         } else {
-            val measurementResult = measurer(index, heightConstraint)
-            if (measurementResult.isNotEmpty()) {
-                val placeable = measurementResult.first()
-                if (isVisible) {
-                    placeables[index] = placeable
-                }
-                val newHeight = placeable.height
-                val oldHeight = measuredHeights[index] ?: 0
-                if (newHeight > 0) {
-                    measuredHeights[index] = newHeight
-                }
-                if (newHeight != oldHeight) {
-                    heightChanges.add(index to (newHeight - oldHeight))
-                }
-                newHeight
-            } else {
-                0
+            val placeable = measurer(index, heightConstraint).firstOrNull()
+            if (isVisible && placeable != null) {
+                placeables[index] = placeable
             }
+            // A fresh measurement is authoritative. A block that now renders nothing (no nodes, or a
+            // zero-height node while it loads again) collapses instead of keeping its previous height
+            // as a blank gap; once it reports a height again it is shown in place.
+            val newHeight = placeable?.height ?: 0
+            val oldHeight = measuredHeights[index] ?: 0
+            if (newHeight > 0) {
+                measuredHeights[index] = newHeight
+            } else {
+                measuredHeights.remove(index)
+            }
+            if (newHeight != oldHeight) {
+                heightChanges.add(index to (newHeight - oldHeight))
+            }
+            newHeight
         }
 
-        if (itemHeight > 0) {
-            itemHeights[index] = itemHeight
-        }
+        itemHeights[index] = itemHeight
     }
     
     return Triple(placeables, itemHeights, heightChanges)
