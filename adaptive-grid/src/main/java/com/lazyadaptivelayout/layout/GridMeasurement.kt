@@ -49,6 +49,11 @@ internal fun clearMeasurementCaches() {
     cachedDataVersion = Int.MIN_VALUE
 }
 
+/** Drops cached positions so the next layout is computed from the current heights. */
+internal fun invalidatePositionCache() {
+    cachedPositions = null
+}
+
 /** Drops cached positions when item heights changed so layout is recomputed from scratch. */
 internal fun invalidatePositionCacheIfHeightsChanged(heightChanges: List<Pair<Int, Int>>) {
     if (heightChanges.isNotEmpty()) {

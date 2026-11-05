@@ -5,8 +5,8 @@ package com.lazyadaptivelayout.layout
  * geometrically intersect the viewport.
  *
  * Pagination and secondary-fetch anchors render nothing (height 0) but must appear in
- * [com.lazyadaptivelayout.state.AdaptiveGridState.layoutInfo.visibleItemsInfo] so Rex can
- * trigger [FetchNextPage] / [FetchSecondaryBlockData] when their index is reached.
+ * [com.lazyadaptivelayout.state.AdaptiveGridState.layoutInfo.visibleItemsInfo] so consumers can
+ * load the next page or secondary data when their index is reached.
  *
  * Two cases are handled:
  * 1. **In-window anchors** — zero-height slots within the current measure window immediately after
