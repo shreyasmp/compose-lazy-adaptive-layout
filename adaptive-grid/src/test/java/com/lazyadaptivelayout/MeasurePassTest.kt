@@ -48,9 +48,17 @@ class MeasurePassTest {
         override fun placeAt(position: IntOffset, zIndex: Float, layerBlock: (GraphicsLayerScope.() -> Unit)?) = Unit
     }
 
-    /** A feed whose item heights can change between passes; counts every compose-and-measure. */
+    /**
+     * A feed whose item heights can change between passes; counts every compose-and-measure.
+     *
+     * Like a real Measurable, an item may be measured only once per measure pass: a second measure() of
+     * the same item throws, which crashes the app.
+     */
     private class Feed(val heights: MutableList<Int>, val keys: List<Any> = heights.indices.map { "k$it" }) {
         var measured = 0
+        private val measuredInThisPass = mutableSetOf<Int>()
+
+        fun beginPass() = measuredInThisPass.clear()
         val provider: GridLayoutProvider<Int> = object : GridLayoutProvider<Int> {
             override val items: List<GridItem<Int>> = emptyList()
             override val itemCount: Int = heights.size
@@ -75,6 +83,9 @@ class MeasurePassTest {
         }
 
         fun measurer(index: Int, constraints: Constraints): List<Placeable> {
+            check(measuredInThisPass.add(index)) {
+                "measure() may not be called multiple times on the same Measurable (item $index)"
+            }
             measured++
             val h = heights[index]
             return if (h > 0) listOf(FakePlaceable(constraints.maxWidth, h)) else emptyList()
@@ -86,6 +97,7 @@ class MeasurePassTest {
         var last: MeasurePassResult? = null
 
         fun pass(test: MeasurePassTest, anchor: Int = 0, offset: Int): MeasurePassResult {
+            feed.beginPass()
             val result = measureWindow(
                 layoutProvider = feed.provider,
                 enrichedItems = feed.enriched,
@@ -295,6 +307,72 @@ class MeasurePassTest {
 
         assertEquals(12, result.measuredEnd)
         assertTrue("took $passes passes", passes <= 3)
+    }
+
+    // ------------------------------------- each item is measured once per pass
+
+    @Test
+    fun scrollingToTheEndOfAFeedWithTrailingAnchors_neverMeasuresAnItemTwiceInAPass() {
+        // 25 items of content followed by anchors (pagination / secondary fetch) that have no height.
+        val feed = Feed(MutableList(40) { if (it < 25) 200 else 0 })
+        val scroller = Scroller(feed)
+        scroller.settle(this, offset = 0)
+
+        var offset = 0
+        repeat(120) {
+            offset += 60
+            scroller.settle(this, offset = offset)
+        }
+        assertEquals(39, scroller.last!!.measuredEnd)
+    }
+
+    @Test
+    fun blockThatCollapsesInTheViewport_pullsInItemsBehindEmptyBlocks_withoutMeasuringThemTwice() {
+        // Items 15..18 are empty blocks (no height yet) in front of sized items.
+        val heights = MutableList(40) { if (it in 15..18) 0 else 200 }
+        val feed = Feed(heights)
+        val scroller = Scroller(feed)
+        scroller.settle(this, offset = 1900)
+
+        // A visible block goes back to loading and collapses. Everything below moves up, so item 19 now
+        // reaches the viewport. The empty blocks in front of it were already visited by the window of
+        // this pass (they have no cached height); they must not be measured again to place item 19.
+        feed.heights[10] = 0
+        val result = scroller.pass(this, offset = 1900)
+
+        assertEveryItemOnScreenHasAPlaceable(result, 1900)
+        assertNotNull("item 19 is on screen", result.placeables[19])
+    }
+
+    @Test
+    fun measureWindow_neverMeasuresAnItemTwiceInAPass_whateverTheScrollAndHeightChanges() {
+        // The Feed fake throws on a second measure() of the same item in one pass, like a real Measurable.
+        // Random feeds mix empty blocks with sized ones; blocks load and unload and the scroll moves
+        // forward, backward and jumps, so every combination of window, discovery and verification occurs.
+        repeat(300) { seed ->
+            val random = java.util.Random(seed.toLong())
+            val count = 20 + random.nextInt(120)
+            val feed = Feed(MutableList(count) { if (random.nextInt(4) == 0) 0 else 40 + random.nextInt(700) })
+            val scroller = Scroller(feed)
+            var offset = 0
+            repeat(60) { step ->
+                when (random.nextInt(6)) {
+                    0 -> offset = maxOf(0, offset - random.nextInt(1500))
+                    1 -> offset += random.nextInt(8000)
+                    else -> offset += random.nextInt(400)
+                }
+                if (random.nextInt(3) == 0) {
+                    val changed = random.nextInt(count)
+                    feed.heights[changed] = if (feed.heights[changed] > 0) 0 else 40 + random.nextInt(700)
+                }
+                val anchor = if (random.nextInt(8) == 0) random.nextInt(count) else 0
+                try {
+                    scroller.pass(this, anchor = anchor, offset = if (anchor == 0) offset else random.nextInt(300))
+                } catch (e: IllegalStateException) {
+                    throw AssertionError("seed $seed step $step anchor $anchor offset $offset: ${e.message}", e)
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------- height changes

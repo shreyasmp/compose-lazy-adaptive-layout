@@ -194,6 +194,11 @@ internal fun <T> measureWindow(
     var itemHeights: List<Int> = emptyList()
     var heightChanges: List<Pair<Int, Int>> = emptyList()
 
+    // Compose allows a Measurable to be measured once per measure pass, and the steps below can reach the
+    // same item again: an item without a cached height is visited by the window and may then be needed on
+    // screen once heights above it changed. Measuring it a second time throws, so the first result is reused.
+    val measuredInThisPass = HashMap<Int, List<Placeable>>()
+
     fun measure(window: IntRange, fresh: IntRange) {
         val pass = measureGridItems(
             layoutProvider = layoutProvider,
@@ -203,8 +208,10 @@ internal fun <T> measureWindow(
             measuredHeights = heightCache.heights,
             constraints = constraints,
             measurer = { index, itemConstraints ->
-                itemsMeasured++
-                measurer(index, itemConstraints)
+                measuredInThisPass.getOrPut(index) {
+                    itemsMeasured++
+                    measurer(index, itemConstraints)
+                }
             },
             bufferSize = 0,
             getCachedWidth = getCachedWidth,
