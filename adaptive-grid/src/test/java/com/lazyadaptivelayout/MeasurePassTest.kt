@@ -96,7 +96,7 @@ class MeasurePassTest {
         var positions: List<ItemPosition> = emptyList()
         var last: MeasurePassResult? = null
 
-        fun pass(test: MeasurePassTest, anchor: Int = 0, offset: Int): MeasurePassResult {
+        fun pass(test: MeasurePassTest, anchor: Int = 0): MeasurePassResult {
             feed.beginPass()
             val result = measureWindow(
                 layoutProvider = feed.provider,
@@ -104,7 +104,6 @@ class MeasurePassTest {
                 heightCache = cache,
                 previousPositions = positions,
                 anchorIndex = anchor,
-                anchorScrollOffset = offset,
                 constraints = test.constraints,
                 density = test.density,
                 bufferSize = test.bufferSize,
@@ -116,13 +115,13 @@ class MeasurePassTest {
             return result
         }
 
-        /** Runs passes at [offset] until nothing more is requested. */
-        fun settle(test: MeasurePassTest, anchor: Int = 0, offset: Int, maxPasses: Int = 200): Int {
+        /** Runs passes until the heights stop changing. */
+        fun settle(test: MeasurePassTest, anchor: Int = 0, maxPasses: Int = 200): Int {
             var passes = 0
             do {
-                val result = pass(test, anchor, offset)
+                val result = pass(test, anchor)
                 passes++
-            } while ((result.discoveryIncomplete || result.heightChanges.isNotEmpty()) && passes < maxPasses)
+            } while (result.heightChanges.isNotEmpty() && passes < maxPasses)
             return passes
         }
     }
@@ -137,70 +136,56 @@ class MeasurePassTest {
         }
     }
 
-    // ------------------------------------------------- measureWindow: cost
+    // ------------------------------------------------------ the window
 
     @Test
-    fun scrolling_composesOnlyTheViewportAndASmallLookahead_notTheMeasuredPrefix() {
-        val feed = feedOf(75)
-        val scroller = Scroller(feed)
-        scroller.settle(this, offset = 0)
+    fun calculateMeasureRange_startsBeforeTheAnchorAndReachesPastTheViewport() {
+        // viewport 1000 -> 20 items estimated, 3 viewports ahead = 60 items; the 1.0.0 minimum is 20 * 3.
+        assertEquals(0..60, calculateMeasureRange(0, itemCount = 500, bufferSize = 2, viewportHeight = 1000))
+        assertEquals(8..70, calculateMeasureRange(10, itemCount = 500, bufferSize = 2, viewportHeight = 1000))
+    }
 
-        // Scroll deep into the feed one step at a time, the way a fling does.
+    @Test
+    fun calculateMeasureRange_followsTheLastMeasuredItem() {
+        assertEquals(0..160, calculateMeasureRange(0, itemCount = 500, bufferSize = 2, viewportHeight = 1000, lastMeasuredIndex = 100))
+    }
+
+    @Test
+    fun calculateMeasureRange_isClampedToTheList() {
+        assertEquals(0..29, calculateMeasureRange(0, itemCount = 30, bufferSize = 2, viewportHeight = 1000))
+        assertEquals(IntRange.EMPTY, calculateMeasureRange(0, itemCount = 0, bufferSize = 2, viewportHeight = 1000))
+    }
+
+    @Test
+    fun firstPass_measuresTheWholeWindowFresh_andABufferBehindIt() {
+        val feed = feedOf(300)
+        val scroller = Scroller(feed)
+
+        val result = scroller.pass(this)
+
+        // Window 0..60 is fresh and kept; the buffer after it is only measured for its height.
+        assertEquals(62, result.measuredEnd)
+        assertEquals(63, feed.measured)
+        assertNotNull(result.placeables[60])
+        assertNull(result.placeables[61])
+        assertEquals(63 * 200, result.positions[62].y + result.positions[62].height)
+    }
+
+    @Test
+    fun windowFollowsTheLastMeasuredItem_soContentScrolledIntoViewIsAlreadyMeasured() {
+        val feed = feedOf(300)
+        val scroller = Scroller(feed)
+        scroller.pass(this)
+
+        val second = scroller.pass(this)
+        // The last item with a height is 62, so the window now ends at 62 + 60 = 122 (+ buffer 2).
+        assertEquals(124, second.measuredEnd)
+
         var offset = 0
-        var worst = 0
-        repeat(120) {
-            offset += 60
-            feed.measured = 0
-            scroller.settle(this, offset = offset)
-            worst = maxOf(worst, feed.measured)
-            assertEveryItemOnScreenHasAPlaceable(scroller.last!!, offset)
+        while (offset < 120 * 200) {
+            assertEveryItemOnScreenHasAPlaceable(second, offset)
+            offset += 4000
         }
-        // 75 items: a viewport shows 5, plus 2 buffer each side, plus a bounded look-ahead.
-        // The measured prefix (up to 75 items) must not be composed again on every pass.
-        assertTrue("composed up to $worst items in one frame's passes", worst <= 40)
-    }
-
-    @Test
-    fun steadyStatePass_composesOnlyTheItemsAroundTheViewport() {
-        val feed = feedOf(75)
-        val scroller = Scroller(feed)
-        scroller.settle(this, offset = 3000)
-        scroller.settle(this, offset = 3050) // discovery ahead of the viewport catches up
-
-        feed.measured = 0
-        val result = scroller.pass(this, offset = 3050)
-
-        // 5-6 items intersect a 1000px viewport of 200px items; +2 buffer on each side.
-        assertTrue("measured ${feed.measured}", feed.measured <= 11)
-        assertFalse(result.discoveryIncomplete)
-        assertTrue(result.heightChanges.isEmpty())
-        assertEveryItemOnScreenHasAPlaceable(result, 3050)
-    }
-
-    // ----------------------------------- review: restored / requested scroll position
-
-    @Test
-    fun restoredOffsetPastTheFirstItems_isCoveredInOnePassAndNotThrownAway() {
-        val feed = feedOf(75)
-        val scroller = Scroller(feed)
-
-        val result = scroller.pass(this, anchor = 0, offset = 3000)
-
-        val bottom = result.positions.maxOf { it.y + it.height }
-        assertTrue("content must reach the restored viewport, bottom=$bottom", bottom >= 3000 + viewportHeight)
-        assertEveryItemOnScreenHasAPlaceable(result, 3000)
-        assertFalse("the end of the list is still unknown", result.measuredEnd >= 74)
-
-        val scrollBack = scrollBackToContent(
-            positions = result.positions,
-            anchorIndex = 0,
-            anchorScrollOffset = 3000,
-            scrollDelta = 0,
-            viewportHeight = viewportHeight,
-            contentFullyDiscovered = result.measuredEnd >= 74,
-        )
-        assertEquals(3000, scrollBack.firstItemScrollOffset)
-        assertEquals(0, scrollBack.scrollDelta)
     }
 
     @Test
@@ -209,11 +194,11 @@ class MeasurePassTest {
         val scroller = Scroller(feed)
 
         // A restored index, or scrollToItem / scrollToItemByKey, far past anything measured so far.
-        val result = scroller.pass(this, anchor = 40, offset = 0)
+        val result = scroller.pass(this, anchor = 40)
 
         assertEquals(ItemPosition(0, 40 * 200, 1000, 200, 0), result.positions[40])
         assertEveryItemOnScreenHasAPlaceable(result, 40 * 200)
-        assertNull("items before the viewport are measured for their height only", result.placeables[10])
+        assertNull("items before the window are measured for their height only", result.placeables[10])
     }
 
     @Test
@@ -221,13 +206,30 @@ class MeasurePassTest {
         val feed = feedOf(30)
         val scroller = Scroller(feed)
 
-        val result = scroller.pass(this, anchor = 29, offset = 0)
+        val result = scroller.pass(this, anchor = 29)
 
         assertEquals(29 * 200, result.positions[29].y)
-        assertTrue(result.measuredEnd >= 29)
+        assertEquals(29, result.measuredEnd)
     }
 
-    // ---------------------------------------------- review: scroll-back clamp
+    @Test
+    fun itemsBeforeTheWindow_keepTheirCachedHeight() {
+        val feed = feedOf(300)
+        val scroller = Scroller(feed)
+        repeat(3) { scroller.pass(this) }
+        val knownBefore = scroller.cache.heights.toMap()
+
+        feed.measured = 0
+        val result = scroller.pass(this, anchor = 150)
+
+        // Nothing before the window (items 0..147) is composed again; the window itself is measured fresh.
+        assertNull(result.placeables[100])
+        assertNotNull(result.placeables[150])
+        assertTrue("measured ${feed.measured} items", feed.measured <= 300 - 148)
+        knownBefore.forEach { (index, height) -> assertEquals(height, scroller.cache.heights[index]) }
+    }
+
+    // ---------------------------------------------- scroll-back clamp
 
     @Test
     fun scrollBack_isSkippedWhileTheEndOfTheContentIsUnknown() {
@@ -241,72 +243,47 @@ class MeasurePassTest {
     }
 
     @Test
-    fun forwardFlingIntoUnmeasuredContent_isNotClampedBackToTheMeasuredBottom() {
-        val feed = feedOf(75)
+    fun restoredOffsetPastTheFirstItems_isNotThrownAwayWhileTheEndIsUnknown() {
+        val feed = feedOf(300)
         val scroller = Scroller(feed)
-        scroller.settle(this, offset = 0)
-        val measuredBottom = scroller.positions.maxOf { it.y + it.height }
 
-        // A fling reaches well past what has been measured; the pass discovers the missing content and
-        // the clamp only considers a bottom that is final.
-        val result = scroller.pass(this, offset = measuredBottom + 600)
+        val result = scroller.pass(this)
+
+        val bottom = result.positions.maxOf { it.y + it.height }
+        assertTrue("content must reach the restored viewport, bottom=$bottom", bottom >= 3000 + viewportHeight)
+        assertEveryItemOnScreenHasAPlaceable(result, 3000)
         val scrollBack = scrollBackToContent(
-            result.positions, 0, measuredBottom + 600, 0, viewportHeight, contentFullyDiscovered = result.measuredEnd >= 74,
+            positions = result.positions,
+            anchorIndex = 0,
+            anchorScrollOffset = 3000,
+            scrollDelta = 0,
+            viewportHeight = viewportHeight,
+            contentFullyDiscovered = result.measuredEnd >= 299,
         )
-        assertEquals(measuredBottom + 600, scrollBack.firstItemScrollOffset)
-        assertEveryItemOnScreenHasAPlaceable(result, measuredBottom + 600)
+        assertEquals(3000, scrollBack.firstItemScrollOffset)
+        assertEquals(0, scrollBack.scrollDelta)
     }
 
     @Test
-    fun scrollBack_clampsToTheRealEndOnceEverythingIsDiscovered() {
+    fun scrollBack_clampsToTheRealEndOnceEverythingIsVisited() {
         val feed = feedOf(8) // 1600px of content
         val scroller = Scroller(feed)
-        val result = scroller.pass(this, offset = 1500)
-        assertTrue(result.measuredEnd >= 7)
+        val result = scroller.pass(this)
+        assertEquals(7, result.measuredEnd)
 
         val scrollBack = scrollBackToContent(result.positions, 0, 1500, 0, viewportHeight, contentFullyDiscovered = true)
         assertEquals(600, scrollBack.firstItemScrollOffset)
     }
 
-    // ---------------------------------------- discovery across zero-height runs
-
     @Test
-    fun zeroHeightRun_isWalkedAcrossPasses_withBoundedWorkPerPass() {
-        val heights = MutableList(120) { if (it < 10 || it >= 110) 200 else 0 }
-        val feed = Feed(heights)
-        val scroller = Scroller(feed)
-        scroller.settle(this, offset = 0)
-
-        var passes = 0
-        var previousEnd = -1
-        var offset = 2000
-        while (scroller.last!!.measuredEnd < 110 && passes < 60) {
-            val result = scroller.pass(this, offset = offset)
-            passes++
-            assertTrue("discovery must make progress", result.measuredEnd >= previousEnd)
-            previousEnd = result.measuredEnd
-            if (!result.discoveryIncomplete) offset += 100
-        }
-        assertTrue("never reached the content below the run", scroller.last!!.measuredEnd >= 110)
-        assertTrue("took $passes passes", passes <= 40)
-    }
-
-    @Test
-    fun trailingAnchors_areVisitedWhenTheViewportApproachesTheEnd() {
+    fun trailingAnchors_areVisitedOnceTheWindowReachesTheEnd() {
         val heights = MutableList(13) { if (it < 10) 200 else 0 } // 3 trailing zero-height anchors
         val feed = Feed(heights)
         val scroller = Scroller(feed)
 
-        // The first pass spends its budget filling the viewport; the next one reaches the anchors.
-        var result = scroller.pass(this, offset = 1000)
-        var passes = 1
-        while (result.discoveryIncomplete && passes < 5) {
-            result = scroller.pass(this, offset = 1000)
-            passes++
-        }
+        val result = scroller.pass(this)
 
         assertEquals(12, result.measuredEnd)
-        assertTrue("took $passes passes", passes <= 3)
     }
 
     // ------------------------------------- each item is measured once per pass
@@ -316,13 +293,8 @@ class MeasurePassTest {
         // 25 items of content followed by anchors (pagination / secondary fetch) that have no height.
         val feed = Feed(MutableList(40) { if (it < 25) 200 else 0 })
         val scroller = Scroller(feed)
-        scroller.settle(this, offset = 0)
 
-        var offset = 0
-        repeat(120) {
-            offset += 60
-            scroller.settle(this, offset = offset)
-        }
+        repeat(120) { scroller.settle(this) }
         assertEquals(39, scroller.last!!.measuredEnd)
     }
 
@@ -332,13 +304,11 @@ class MeasurePassTest {
         val heights = MutableList(40) { if (it in 15..18) 0 else 200 }
         val feed = Feed(heights)
         val scroller = Scroller(feed)
-        scroller.settle(this, offset = 1900)
+        scroller.settle(this)
 
-        // A visible block goes back to loading and collapses. Everything below moves up, so item 19 now
-        // reaches the viewport. The empty blocks in front of it were already visited by the window of
-        // this pass (they have no cached height); they must not be measured again to place item 19.
+        // A visible block goes back to loading and collapses. Everything below moves up.
         feed.heights[10] = 0
-        val result = scroller.pass(this, offset = 1900)
+        val result = scroller.pass(this)
 
         assertEveryItemOnScreenHasAPlaceable(result, 1900)
         assertNotNull("item 19 is on screen", result.placeables[19])
@@ -347,29 +317,22 @@ class MeasurePassTest {
     @Test
     fun measureWindow_neverMeasuresAnItemTwiceInAPass_whateverTheScrollAndHeightChanges() {
         // The Feed fake throws on a second measure() of the same item in one pass, like a real Measurable.
-        // Random feeds mix empty blocks with sized ones; blocks load and unload and the scroll moves
-        // forward, backward and jumps, so every combination of window, discovery and verification occurs.
+        // Random feeds mix empty blocks with sized ones; blocks load and unload and the anchor jumps.
         repeat(300) { seed ->
             val random = java.util.Random(seed.toLong())
             val count = 20 + random.nextInt(120)
             val feed = Feed(MutableList(count) { if (random.nextInt(4) == 0) 0 else 40 + random.nextInt(700) })
             val scroller = Scroller(feed)
-            var offset = 0
             repeat(60) { step ->
-                when (random.nextInt(6)) {
-                    0 -> offset = maxOf(0, offset - random.nextInt(1500))
-                    1 -> offset += random.nextInt(8000)
-                    else -> offset += random.nextInt(400)
-                }
                 if (random.nextInt(3) == 0) {
                     val changed = random.nextInt(count)
                     feed.heights[changed] = if (feed.heights[changed] > 0) 0 else 40 + random.nextInt(700)
                 }
                 val anchor = if (random.nextInt(8) == 0) random.nextInt(count) else 0
                 try {
-                    scroller.pass(this, anchor = anchor, offset = if (anchor == 0) offset else random.nextInt(300))
+                    scroller.pass(this, anchor = anchor)
                 } catch (e: IllegalStateException) {
-                    throw AssertionError("seed $seed step $step anchor $anchor offset $offset: ${e.message}", e)
+                    throw AssertionError("seed $seed step $step anchor $anchor: ${e.message}", e)
                 }
             }
         }
@@ -381,12 +344,10 @@ class MeasurePassTest {
     fun blockThatLoadsAboveTheViewport_leavesNoUnplacedItemOnScreen() {
         val feed = feedOf(40)
         val scroller = Scroller(feed)
-        scroller.settle(this, offset = 2000)
+        scroller.settle(this)
 
-        // A block above the viewport changes height in the same pass: the items that are now on screen
-        // were not around the viewport before, and must still be measured.
         feed.heights[2] = 900
-        val result = scroller.pass(this, offset = 2000)
+        val result = scroller.pass(this)
         assertEveryItemOnScreenHasAPlaceable(result, 2000)
     }
 
@@ -396,18 +357,16 @@ class MeasurePassTest {
     fun appendedItems_keepTheHeightsAlreadyKnown() {
         val feed = feedOf(20)
         val scroller = Scroller(feed)
-        scroller.settle(this, offset = 0)
+        scroller.settle(this)
         val known = scroller.cache.heights.toMap()
         assertTrue(known.isNotEmpty())
 
         val grown = Feed(MutableList(40) { 200 }) // same keys for 0..19, 20 new items
         val next = Scroller(grown, scroller.cache)
         next.positions = scroller.positions
-        grown.measured = 0
-        next.pass(this, offset = 0)
+        next.pass(this)
 
         known.forEach { (index, height) -> assertEquals(height, scroller.cache.heights[index]) }
-        assertTrue("re-measured ${grown.measured} items", grown.measured <= 12)
     }
 
     @Test
@@ -416,13 +375,11 @@ class MeasurePassTest {
         val original = Feed(MutableList(10) { 100 })
         assertFalse(cache.syncWith(original.enriched))
         (0 until 10).forEach { cache.heights[it] = 100 }
-        cache.reach = 9
 
         val reordered = Feed(MutableList(10) { 100 }, keys = List(10) { if (it < 4) "k$it" else "other$it" })
         assertTrue(cache.syncWith(reordered.enriched))
 
         assertEquals(setOf(0, 1, 2, 3), cache.heights.keys)
-        assertEquals(3, cache.reach)
     }
 
     @Test
@@ -430,62 +387,9 @@ class MeasurePassTest {
         val cache = MeasuredHeightCache()
         cache.syncWith(Feed(MutableList(10) { 100 }).enriched)
         (0 until 10).forEach { cache.heights[it] = 100 }
-        cache.reach = 9
 
         assertFalse(cache.syncWith(Feed(MutableList(6) { 100 }).enriched))
 
         assertEquals((0 until 6).toSet(), cache.heights.keys)
-        assertEquals(5, cache.reach)
-    }
-
-    // ------------------------------------------------- pure helpers
-
-    private fun position(index: Int, height: Int = 100) = ItemPosition(0, index * 100, 1000, height, 0)
-
-    @Test
-    fun viewportItemRange_includesIntersectingItemsAndTheBuffer() {
-        val positions = List(20) { position(it) }
-        // viewport 450..750 intersects items 4..7
-        assertEquals(2..9, viewportItemRange(positions, 450, 750, bufferSize = 2))
-    }
-
-    @Test
-    fun viewportItemRange_clampsToTheList() {
-        val positions = List(5) { position(it) }
-        assertEquals(0..4, viewportItemRange(positions, 0, 300, bufferSize = 4))
-    }
-
-    @Test
-    fun viewportItemRange_isNullWhenNothingIsPositionedInTheViewport() {
-        assertNull(viewportItemRange(List(5) { ItemPosition(0, 0, 0, 0, 0) }, 0, 500, 2))
-        assertNull(viewportItemRange(List(5) { position(it) }, 2000, 2500, 2))
-        assertNull(viewportItemRange(emptyList(), 0, 500, 2))
-    }
-
-    @Test
-    fun viewportItemRange_keepsZeroHeightItemsThatSitInsideTheRange() {
-        val positions = listOf(position(0), ItemPosition(0, 100, 1000, 0, 0), position(2))
-        assertEquals(0..2, viewportItemRange(positions, 0, 300, bufferSize = 0))
-    }
-
-    @Test
-    fun nextDiscoveryRange_stepsByTheBufferAndStopsAtTheListEnd() {
-        assertEquals(10..12, nextDiscoveryRange(100, measuredEnd = 9, bufferSize = 2, itemsDiscovered = 0, viewportCovered = false))
-        assertEquals(99..99, nextDiscoveryRange(100, measuredEnd = 98, bufferSize = 2, itemsDiscovered = 0, viewportCovered = false))
-        assertNull(nextDiscoveryRange(100, measuredEnd = 99, bufferSize = 2, itemsDiscovered = 0, viewportCovered = false))
-    }
-
-    @Test
-    fun nextDiscoveryRange_hasASmallerBudgetOnceTheViewportIsCovered() {
-        assertNotNull(nextDiscoveryRange(500, 9, 2, itemsDiscovered = LOOKAHEAD_ITEMS_PER_PASS - 1, viewportCovered = true))
-        assertNull(nextDiscoveryRange(500, 9, 2, itemsDiscovered = LOOKAHEAD_ITEMS_PER_PASS, viewportCovered = true))
-        assertNotNull(nextDiscoveryRange(500, 9, 2, itemsDiscovered = LOOKAHEAD_ITEMS_PER_PASS, viewportCovered = false))
-        assertNull(nextDiscoveryRange(500, 9, 2, itemsDiscovered = VIEWPORT_ITEMS_PER_PASS, viewportCovered = false))
-    }
-
-    @Test
-    fun nextDiscoveryRange_neverExceedsTheRemainingBudget() {
-        val range = nextDiscoveryRange(500, 9, bufferSize = 10, itemsDiscovered = LOOKAHEAD_ITEMS_PER_PASS - 2, viewportCovered = true)
-        assertEquals(10..11, range)
     }
 }
